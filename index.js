@@ -3,29 +3,44 @@ import Receiver from './rx.js'
 
 // Chrome won't allow audio stuff without user action sooooo...
 document.getElementById('create').addEventListener('click', () => {
-    const canvas = document.createElement('canvas')
-    canvas.style.position = 'relative'
-    canvas.style.top = 0
-    canvas.style.left = 0
-    canvas.width = 768
-    canvas.height = 150
-    document.body.appendChild(canvas)
-    const canvasCtx = canvas.getContext('2d')
-    canvasCtx.clearRect(0, 0, canvas.width, canvas.height)
 
+    function stringToBinary(str) {
+        var buf = new ArrayBuffer(str.length*2)
+        var binArr = new Uint16Array(buf)
+        for (var i=0; i < str.length; i++) {
+          binArr[i] = str.charCodeAt(i)
+        }
+        return buf
+    }
+
+    let data = new Uint8Array(stringToBinary('testing'))      
 
     const AudioContext = window.AudioContext || window.webkitAudioContext
     const audioCtx = new AudioContext()
     let tx
     let rx
 
+    let params = {
+        duration: .05,
+        rampTime: .002,
+        fftSize: 256,
+        freqs: [3550, 4050, 4550, 5050],
+        minPeak: 20
+    }
+
+    let onDataLoaded = function(data) {
+        let typedData = new Uint16Array(data)
+        let str = String.fromCharCode.apply(null, typedData);
+        document.getElementById('message').innerHTML = 'Message is: ' + str
+    }
+
     document.getElementById('mic').addEventListener('click', () => {
         if(navigator.mediaDevices.getUserMedia) {
             navigator.mediaDevices.getUserMedia ({audio: true, video: false})
             .then((stream) => {
                 let sourceNode = audioCtx.createMediaStreamSource(stream)
-                rx = new Receiver(audioCtx, sourceNode)
-                rx.listenAndDraw(canvasCtx)
+                rx = new Receiver(audioCtx, onDataLoaded, params)
+                sourceNode.connect(rx.scriptNode)  
             }).catch(err => {
                 console.log('ERROR getting stream', err)
             })
@@ -35,10 +50,17 @@ document.getElementById('create').addEventListener('click', () => {
     })
 
     document.getElementById('simulate').addEventListener('click', () => {
-        tx = new Transmitter(audioCtx, 440)
-        rx = new Receiver(audioCtx, tx.transmit_signal)
-        rx.listenAndDraw(canvasCtx)
-        tx.transmit_signal.start()
-        tx.transmit_signal.stop(audioCtx.currentTime + 5)
+        let transfer = new GainNode(audioCtx)
+        transfer.gain.value = 1
+        params.output = transfer
+        tx = new Transmitter(audioCtx, params)
+        rx = new Receiver(audioCtx, onDataLoaded, params)
+        transfer.connect(rx.scriptNode)
+        tx.send(data)
+    })
+
+    document.getElementById('broadcast').addEventListener('click', () => {
+        tx = new Transmitter(audioCtx, params)
+        tx.send(data)
     })
 })

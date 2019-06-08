@@ -1,51 +1,80 @@
+import Coder from './coder.js'
+import Filter from './filter.js'
+
 class Receiver {
-    constructor(audioContext, source) {
-        this.listenAndDraw = this.listenAndDraw.bind(this)
+    constructor(audioContext, callback, params) {
+        params = params || {}
 
+        params.fftSize = params.fftSize || 512
+        this.coder = new Coder(params)
+        this.minPeak = params.minPeak || 10
+        this.duration = params.duration || .05
         this.audioCtx = audioContext
-        this.analyser = audioContext.createAnalyser()
-        this.analyser.fftSize = 512
-        this.bufferLength = this.analyser.frequencyBinCount
-        this.dataArray = new Float32Array(this.bufferLength)
+        this.scriptNode = audioContext.createScriptProcessor(params.fftSize, 1, 0)
 
-        source.connect(this.analyser)
-    }
+        this.filters = [
+            new Filter(params.freqs[0], this.audioCtx.sampleRate, params.fftSize),
+            new Filter(params.freqs[1], this.audioCtx.sampleRate, params.fftSize),
+            new Filter(params.freqs[2], this.audioCtx.sampleRate, params.fftSize),
+            new Filter(params.freqs[3], this.audioCtx.sampleRate, params.fftSize),
+        ]
 
-    listenAndDraw(canvasCtx) {
-        let draw = () => {
-            let WIDTH = canvasCtx.canvas.width
-            let HEIGHT = canvasCtx.canvas.height
+        this.freqsBuffer = []
+        this.tempBuffer = []
+        this.lastPeak = 0
+        this.dataArray = []
 
-            requestAnimationFrame(draw)
+        this.idle = false
 
-            this.analyser.getFloatTimeDomainData(this.dataArray);
+        this.scriptNode.onaudioprocess = (audioProcessingEvent) => {
+            if(!this.idle) {
+                var buf = audioProcessingEvent.inputBuffer
+                let samples = new Float32Array(buf.getChannelData(0))
 
-            canvasCtx.fillStyle = 'rgb(200, 200, 200)';
-            canvasCtx.fillRect(0, 0, WIDTH, HEIGHT);
-            canvasCtx.lineWidth = 2;
-            canvasCtx.strokeStyle = 'rgb(0, 0, 0)';
-            canvasCtx.beginPath();
+                // See if this sample contains a freq we want
+                let freq = null
+                let max = -Infinity
+                this.filters.forEach(filter => {
+                    let current = filter.filter(samples)
+                    if(current > max) {
+                        max = current
+                        freq = filter.freq
+                    }
+                })
 
-            var sliceWidth = WIDTH * 1.0 / this.bufferLength;
-            var x = 0;
+                // Freqs are stored in a buffer which is flushed when there's a change, or it detects a repeating freq, otherwise
+                // the current freq hit is pushed into the buffer
+                if(max > this.minPeak) {
+                    if(this.tempBuffer.length > 0 && freq !== this.tempBuffer[0]) {
+                        this.freqsBuffer.push(this.tempBuffer[0])
+                        this.lastPeak = this.audioCtx.currentTime
+                        this.tempBuffer = [freq]
+                    } else if (this.tempBuffer.length > this.duration / (params.fftSize / this.audioCtx.sampleRate)) {
+                        this.freqsBuffer.push(this.tempBuffer[0])
+                        this.lastPeak = this.audioCtx.currentTime
+                        this.tempBuffer = [freq]
+                    } else {
+                        this.tempBuffer.push(freq)
+                    }
 
-            for(var i = 0; i < this.bufferLength; i++) {
-                var v = this.dataArray[i] * 200.0;
-                var y = HEIGHT/2 + v;
-
-                if(i === 0) {
-                    canvasCtx.moveTo(x, y);
-                } else {
-                    canvasCtx.lineTo(x, y);
+                    if(this.freqsBuffer.length === 4) {
+                        this.dataArray.push(this.coder.freqsToByte(this.freqsBuffer))
+                        this.freqsBuffer = []
+                    }
                 }
-                x += sliceWidth;
+
+                // Once enough time passes, flush the temporary freq buffer if necessary and send back the collected data
+                if(this.audioCtx.currentTime - this.lastPeak > 40 * this.duration && this.dataArray.length > 0) {
+                    if(this.tempBuffer.length > 0 && this.freqsBuffer.length === 3) {
+                        this.freqsBuffer.push(this.tempBuffer[0])
+                        this.dataArray.push(this.coder.freqsToByte(this.freqsBuffer))
+                    }
+
+                    callback(new Uint8Array(this.dataArray))
+                    this.idle = true
+                }
             }
-
-            canvasCtx.lineTo(WIDTH, HEIGHT/2);
-            canvasCtx.stroke();
         }
-
-        draw()
     }
 }
 
